@@ -1,0 +1,73 @@
+---
+### https://docs.docker.com/compose/compose-file/
+
+networks:
+  containerhost:
+    external: true
+
+volumes:
+  mariadb-data:
+
+services:
+
+  pma:
+    # https://hub.docker.com/_/phpmyadmin
+    image: docker.io/library/phpmyadmin:5.2-apache
+# PHPMyAdmin listens on port 80, haproxy terminates SSL / TLS 
+#    ports:
+#      - 9090:80
+    networks:
+      - containerhost
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+      - PMA_CHARSET=utf8mb4
+      - PMA_COLLATION_CONNECTION=utf8mb4_unicode_ci
+#      - PMA_ABSOLUTE_URI=https://snakeoil.example.com/phpmyadmin
+      - PMA_HOST=mariadb
+      - UPLOAD_LIMIT=1000M
+
+    restart: unless-stopped
+    volumes:
+      - /home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/phpmyadmin/config.user.inc.php:/etc/phpmyadmin/config.user.inc.php:z
+    depends_on:
+      - mariadb
+
+
+  mariadb:
+    # For MySQL migration: https://mariadb.com/kb/en/mariadb-vs-mysql-compatibility/
+    # https://hub.docker.com/_/mariadb
+    #image: docker.io/library/mariadb:10.11.8-ubi9
+    #image: docker.io/library/mariadb:10.4.34-focal
+    image: docker.io/library/mariadb:12.3-rc
+    command: 
+      - --character-set-server=utf8mb4 
+      - --collation-server=utf8mb4_unicode_ci
+#      - --default-authentication-plugin=mysql_native_password
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+      - MYSQL_ROOT_PASSWORD=foobar
+      - MYSQL_DATABASE=projectdb
+      - MYSQL_USER=projectdb-user
+      - MYSQL_PASSWORD=projectdb-password
+    restart: unless-stopped
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - /home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/dbdumps:/mnt/mariadb-backups:z,ro
+
+  mariadb-backup:
+    image: localhost/local/mariadb-backup:latest
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+      - MARIADB_HOSTNAME=mariadb
+      - MARIADB_PORT=3306
+      - MARIADB_USERNAME=root
+      - MARIADB_PASSWORD=foobar
+      - BACKUP_RETENTION_DAYS=30
+    restart: unless-stopped
+    volumes:
+      - /home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/dbdumps:/mnt/mariadb-backups:z
+    depends_on:
+      - mariadb

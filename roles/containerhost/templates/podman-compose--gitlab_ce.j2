@@ -1,0 +1,94 @@
+---
+### https://docs.docker.com/compose/compose-file/
+
+networks:
+  containerhost:
+    external: true
+
+services:
+
+# https://docs.gitlab.com/install/docker/installation/#install-gitlab-by-using-docker-compose
+  gitlab-ce:
+#   https://hub.docker.com/r/gitlab/gitlab-ce
+    image: docker.io/gitlab/gitlab-ce:18.11.3-ce.0
+    hostname: '{{ ansible_host }}'
+    shm_size: '256m'
+    stop_grace_period: "{{ containerhost__container_project_timeout }}s"
+    networks:
+      - containerhost
+    ports:
+#      - '8929:8929'
+#      - '443:443'
+#      - '2424:22'
+    environment:
+      TZ: {{ containerhost__time_zone }}
+      LANG: en_US.utf8
+      GITLAB_OMNIBUS_CONFIG: |
+        # Add any other gitlab.rb configuration here, each on its own line
+        # https://docs.gitlab.com/omnibus/settings/ssl/#configure-a-reverse-proxy-or-load-balancer-ssl-termination
+        external_url 'https://{{ ansible_host }}/gitlab'
+
+        # Force the relative URL at the Rails level
+        gitlab_rails['relative_url_root'] = "/gitlab"
+
+        letsencrypt['enable'] = false
+
+        # Initial root password: cat /etc/gitlab/initial_root_password
+        # Relax pw check in test environment
+        gitlab_rails['password_min_length'] = 4
+        gitlab_rails['password_complexity_requirements'] = {
+          "digit" => 0,
+          "lowercase" => 0,
+          "uppercase" => 0,
+          "symbol" => 0
+        }
+
+        nginx['listen_port'] = 9999
+        nginx['listen_https'] = false
+        # This is the advertised port on the web ui, the internal sshd listens on tcp/22
+        gitlab_rails['gitlab_shell_ssh_port'] = 2424
+
+        
+        gitlab_rails['trusted_proxies'] = ['0.0.0.0/0']
+        gitlab_rails['monitoring_whitelist'] = ['0.0.0.0/0']
+
+        # Disables Puma clustering, claimed 2-400Mb RAM savings
+        #puma['worker_processes'] = 0
+
+        # Disable services to save resources
+        alertmanager['enable'] = false
+        gitlab_exporter['enable'] = false
+        gitlab_kas['enable'] = false
+        node_exporter['enable'] = false
+        postgres_exporter['enable'] = false
+        prometheus_monitoring['enable'] = false
+        prometheus['enable'] = false
+        puma['exporter_enabled'] = false
+        redis_exporter['enable'] = false
+        sidekiq['metrics_enabled'] = false
+      GITLAB_POST_RECONFIGURE_SCRIPT: /etc/gitlab/post-reconfigure.sh
+    volumes:
+      - '/home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/gitlab-server/config:/etc/gitlab:z,rw'
+      - '/home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/gitlab-server/logs:/var/log/gitlab:z,rw'
+      - '/home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/gitlab-server/data:/var/opt/gitlab:z,rw'
+    restart: unless-stopped
+
+# If you use the shell executor. Then no container socket is required.
+# Jobs run directly on the host:
+# executor = "shell"
+# Limitation: .gitlab-ci.yml jobs cannot use image, jobs are not isolated
+# This works fine with Podman installed locally if your scripts call podman manually.
+# https://docs.gitlab.com/runner/install/docker/
+# FIXME: https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/1285
+
+  gitlab-runner:
+    # https://hub.docker.com/r/gitlab/gitlab-runner
+    image: docker.io/gitlab/gitlab-runner:latest
+    networks:
+      - containerhost
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+    volumes:
+      - '/home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/gitlab-runner/config:/etc/gitlab-runner:z,rw'
+    restart: unless-stopped

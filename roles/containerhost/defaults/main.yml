@@ -1,0 +1,51 @@
+---
+# defaults file for containerhost
+# These values are expected to be overridden as the environment requires
+
+# Set host timezone
+containerhost__time_zone: "Europe/Budapest"
+
+# Set host hostname to inventory hostname
+containerhost__enforce_inventory_hostname: true
+
+# Install fail2ban to protect SSH
+containerhost__enable_fail2ban: true
+
+# Ports opened on host firewall
+containerhost__firewall_allowed_ports:
+  - "22/tcp"
+  - "80/tcp"
+  - "443/tcp"
+  # Gitlab CE SSH
+  - "2424/tcp"
+
+# Enable HAProxy HTTP authentication
+containerhost__haproxy_auth_enabled: false
+
+# Enable LetsEncrypt with tcp/80 HTTP
+containerhost__certbot_enabled: false
+containerhost__certbot_email: 'admin@example.com'
+
+# Enable automatic package updates
+containerhost__automatic_package_updates_enabled: true
+
+# This specifies which container project to use - you are expected to override
+containerhost__container_project_name: dummy
+
+# Timeout in seconds to podman pod stop --time zzzz
+# It seems "podman pod ...." commands does to honor 
+containerhost__container_project_timeout: 60
+
+# To prevent autostart of generated systemd unit for the pod
+# override it to 'stopped'
+containerhost__podman_systemd_unit_initial_state: restarted
+
+# Is OpenVPN support required on the host ?
+containerhost__openvpn_connection_enabled: false
+
+# Profile to import, you are expected to put
+# a file with this name + .ovpn extension to Ansible project directory
+containerhost__openvpn_connection_profile_fn: "vpn-connection"
+
+# Install Zabbix Agent 2 on the host (monitor OS)
+containerhost__install_zabbix_agent_to_managed_host: false

@@ -1,0 +1,47 @@
+---
+### https://docs.docker.com/compose/compose-file/
+
+networks:
+  containerhost:
+    external: true
+
+volumes:
+  postgres-data:
+
+services:
+
+  postgres:
+    image: docker.io/library/postgres:18
+    networks:
+      - containerhost
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+      - PGDATA=/var/lib/postgresql/data
+      - POSTGRES_PASSWORD=dummy
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - /home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/dbdumps:/mnt/postgres-backups:z,ro
+
+  postgres-backup:
+    image: localhost/local/postgresql-backup:latest
+    networks:
+      - containerhost
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+      - DATA_DIR=/mnt/postgres-backups
+      - INSTALL_DIR=/root/scripts
+      - PGPASSFILE=/root/scripts/pgpass.txt
+      - PGBACKUP_HOSTNAME=postgres
+      - PGBACKUP_PORT=5432
+      - PGBACKUP_DATABASE=*
+      - PGBACKUP_USERNAME=postgres
+      - PGBACKUP_PASSWORD=dummy
+      - PGBACKUP_RETENTION_DAYS=30
+    restart: unless-stopped
+    volumes:
+      - /home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/dbdumps:/mnt/postgres-backups:z
+    depends_on:
+      - postgres

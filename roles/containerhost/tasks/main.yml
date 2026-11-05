@@ -1,0 +1,269 @@
+---
+# main tasks file for role containerhost
+
+# see: https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_reuse_roles.html#roles
+
+#
+# It is possible to update the container project by calling only the tasks
+# which are tagged with "update"
+#
+
+- name: Validate container project setting
+  ansible.builtin.assert:
+    that:
+      - containerhost__container_project_name is defined
+      - containerhost__container_project_name in containerhost__container_allowed_projects
+    fail_msg: >-
+      containerhost__container_project_name is "{{ containerhost__container_project_name }}",
+      but must be one of: {{ containerhost__container_allowed_projects | join(', ') }}
+    success_msg: "containerhost__container_project_name is valid"
+
+- name: Populate service facts
+  become: true
+  ansible.builtin.service_facts:
+
+- name: Set timezone
+  become: true
+  community.general.timezone:
+    name: "{{ containerhost__time_zone }}"
+
+- name: Set hostname to inventory hostname
+  become: true
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+  when: containerhost__enforce_inventory_hostname
+
+# I'm sorry, this task should be removed once the required settings are investigated
+- name: Put SELinux in permissive mode
+  become: true
+  ansible.posix.selinux:
+    policy: targeted
+    state: permissive
+
+- name: Enable EPEL repository
+  become: true
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+  when:
+    - ansible_os_family == 'RedHat'
+    - ansible_distribution != 'Fedora'
+
+- name: "Configure fail2ban"
+  when: containerhost__enable_fail2ban | bool
+  block:
+    - name: "Install fail2ban packages"
+      become: true
+      ansible.builtin.dnf:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - fail2ban
+        - iptables
+
+    - name: "Config fail2ban: ignore local ip-s"
+      become: true
+      ansible.builtin.copy:
+        dest: "/etc/fail2ban/jail.d/ignoreip.local"
+        mode: "0644"
+        content: |
+          [DEFAULT]
+          ignoreip = 127.0.0.1/8       \
+                     10.0.0.0/8        \
+                     172.16.0.0/12     \
+                     192.168.0.0/16    \
+                     ::1               \
+                     fc00::/7          \
+                     fe80::/10
+
+    - name: "Config fail2ban: add jail for sshd"
+      become: true
+      ansible.builtin.copy:
+        dest: "/etc/fail2ban/jail.d/sshd.local"
+        mode: "0644"
+        content: |
+          [sshd]
+          enabled = true
+          port = ssh
+          action = iptables-multiport
+          logpath = /var/log/secure
+          maxretry = 2
+          bantime = 300
+
+    - name: "Start fail2ban service"
+      become: true
+      ansible.builtin.systemd:
+        name: fail2ban
+        enabled: true
+        state: started
+
+- name: Install container host required packages
+  become: true
+  ansible.builtin.dnf:
+    name: "{{ containerhost__packages_install_dnf }}"
+    state: present
+
+- name: Enable automatic package updates
+  ansible.builtin.import_tasks: t_auto_pkg_update_dnf.yml
+  when: containerhost__automatic_package_updates_enabled
+
+- name: Ensure podman completion line is in .bashrc
+  become: false
+  ansible.builtin.lineinfile:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    line: 'eval "$(podman completion bash)"'
+    create: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Enable timestamped eternal bash history for all users
+  become: true
+  ansible.builtin.copy:
+    src: "99-eternal-bash-history.sh"
+    dest: "/etc/profile.d/99-eternal-bash-history.sh"
+    owner: root
+    group: root
+    mode: '0644'
+    force: true
+    backup: true
+
+- name: Create container-projects directory in user home
+  become: false
+  ansible.builtin.file:
+    path: /home/{{ ansible_user }}/container-projects
+    state: directory
+    mode: '0755'
+
+- name: Enable and start container host services
+  become: true
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+    state: restarted
+  with_items: "{{ containerhost__system_services }}"
+
+- name: Enable OpenVPN connection
+  ansible.builtin.import_tasks: t_openvpn.yml
+  when: containerhost__openvpn_connection_enabled
+
+- name: Install Zabbix Agent 2 on the managed host
+  ansible.builtin.import_tasks: t_install_zabbix_agent.yml
+  when: containerhost__install_zabbix_agent_to_managed_host
+  
+###############################################################################
+### Project specific tasks
+###############################################################################
+
+- name: Include project specific vars
+  ansible.builtin.include_vars:
+    file: "vars_project_{{ containerhost__container_project_name }}.yml"
+
+- name: Set up host firewall
+  become: true
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    state: enabled
+    permanent: true
+  with_items: "{{ containerhost__firewall_allowed_ports }}"
+  notify: "Restart firewalld"
+  when: containerhost__firewall_allowed_ports is defined
+
+- name: Configure unprivileged ports in sysctl
+  become: true
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "{{ containerhost__ip_unprivileged_port_start }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  when: containerhost__ip_unprivileged_port_start is defined
+
+- name: Copy project-specific files to containerhost user home
+  tags: update
+  # https://docs.ansible.com/ansible/latest/collections/ansible/posix/synchronize_module.html#parameters
+  ansible.posix.synchronize:
+    mode: push
+    src: ./files/container-projects/{{ containerhost__container_project_name }}
+    dest: "/home/{{ ansible_user }}/container-projects/"
+    # delete: true
+    recursive: true
+
+- name: Create podman-compose.yaml from template
+  ansible.builtin.template:
+    src: "podman-compose--{{ containerhost__container_project_name }}.j2"
+    dest: "/home/{{ ansible_user }}/container-projects/{{ containerhost__container_project_name }}/podman-compose.yaml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Create user pod starter helper script
+  ansible.builtin.template:
+    src: "svc.sh.j2"
+    dest: "/home/{{ ansible_user }}/container-projects/{{ containerhost__container_project_name }}/svc.sh"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Create env declarations to use in scripts
+  ansible.builtin.template:
+    src: "environment.env.j2"
+    dest: "/home/{{ ansible_user }}/container-projects/environment.env"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Check if network exists
+  ansible.builtin.command: podman network exists containerhost
+  register: containerhost__net_check
+  failed_when: false
+  changed_when: false
+
+- name: Create network if it does not exist
+  ansible.builtin.command: podman network create containerhost
+  when: containerhost__net_check.rc != 0
+  changed_when: containerhost__net_check.rc != 0
+
+- name: Run project specific tasks
+  ansible.builtin.include_tasks: "project_{{ containerhost__container_project_name }}.yml"
+
+###############################################################################
+### Systemd integration
+###############################################################################
+
+- name: Enable linger for container service user
+  become: true
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ ansible_user }}"
+    creates: "/var/lib/systemd/linger/{{ ansible_user }}"
+
+
+- name: Generate systemd unit file for {{ containerhost__container_project_name }}
+  become: true
+  ansible.builtin.template:
+    src: podman_compose_systemd_unit.j2
+    dest: /etc/systemd/user/podman-compose--{{ containerhost__container_project_name }}.service
+    owner: root
+    group: root
+    mode: u=rw,g=r,o=r
+
+- name: Enable and start (user) systemd unit for container project {{ containerhost__container_project_name }}
+  ansible.builtin.systemd_service:
+    scope: user
+    name: "podman-compose--{{ containerhost__container_project_name }}"
+    enabled: true
+    state: "{{ containerhost__podman_systemd_unit_initial_state }}"
+
+- name: Check if project specific post-start task file exists
+  delegate_to: localhost
+  ansible.builtin.stat:
+    path: "{{ role_path }}/tasks/project_{{ containerhost__container_project_name }}_post_start.yml"
+  register: containerhost__project_post_start_task_file
+  tags:
+    - post_run
+
+- name: Run project specific tasks after the pod is started
+  ansible.builtin.include_tasks: "project_{{ containerhost__container_project_name }}_post_start.yml"
+  when: containerhost__project_post_start_task_file.stat.exists | bool
+  tags:
+    - post_run

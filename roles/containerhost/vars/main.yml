@@ -1,0 +1,43 @@
+---
+# vars file for containerhost
+# These values are used by the role and not expected to be overridden
+
+containerhost__container_allowed_projects:
+  - nw_haproxy
+
+  - db_postgresql
+  - db_mariadb
+
+  - gitlab_ce
+  - jupyterhub
+  - lampstack
+  - rclone
+  - sonatype_nexus_ce
+  - squid
+  - step_ca
+  - wordpress
+  - zabbix
+  - zabbix-proxy
+
+containerhost__system_services:
+  - "firewalld"
+
+containerhost__ip_unprivileged_port_start: '80'
+
+containerhost__packages_install_dnf:
+  - bash-completion   # Needed for "podman completion bash"
+  - bind-utils        # Debug DNS
+  - net-tools         # Debug network, eg ping
+  - nc                # Debug network, tcp
+  - nmap              # Debug network, scan
+  - ntpstat           # Debug NTP
+  - openssl           # Manage and debug SSL / PKI
+  - open-vm-tools     # VM tools for VM guests
+  - jq                # JSON processing
+  - tree              # File system utility
+  - git               # Checkout Containerfile repo for local build
+  - rsync             # Ansible needs for ansible.posix.synchronize
+  - podman            # Podman engine
+  - podman-compose    # Podman compose (EPEL)
+  - buildah
+  - skopeo

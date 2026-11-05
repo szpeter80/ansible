@@ -1,0 +1,124 @@
+# https://www.haproxy.com/documentation/haproxy-configuration-manual/latest/
+global
+  daemon
+  maxconn 5000
+  log stdout  format raw  local0  info
+
+resolvers container-dns
+  accepted_payload_size 8192
+  parse-resolv-conf
+
+defaults
+  mode http
+  timeout connect 5000ms
+  timeout client  5000ms
+  timeout server 60000ms
+  option forwardfor
+
+frontend stats
+  mode http
+  bind *:8081
+  stats enable
+  stats admin if TRUE
+  stats uri /stats
+  stats refresh 10s
+
+#### Frontend config
+
+userlist admins
+  user admin insecure-password {{ lookup('ansible.builtin.password', '/dev/null', length=10, seed=ansible_host) }}
+
+frontend containers-fe-8080
+  bind *:8080
+  http-request del-header X-Forwarded-For
+
+{% if containerhost__certbot_enabled | bool %}
+#  use_backend be-certbot       if { path_beg /.well-known }
+  default_backend be-certbot
+{% else %}
+  http-request redirect   code 301   prefix https://{{ ansible_host }}
+{% endif %}
+
+{% if containerhost__containerhost__container_project_name == "gitlab_ce" %}
+listen gitlab-ssh-2424
+  mode tcp
+  bind *:2424
+  server gitlab_ce-1 gitlab_ce_gitlab-ce_1:22  check  resolvers container-dns  init-addr none
+{% endif %}
+
+frontend containers-fe-8443
+  # Strict SNI has a side effect: startup is possible with empty dir, also no default cert
+  # https://www.haproxy.com/documentation/haproxy-configuration-manual/latest/#5.1-strict-sni
+  bind *:8443 ssl crt /etc/ssl/certs strict-sni
+
+{% if containerhost__haproxy_auth_enabled | bool %}
+  http-request auth unless { http_auth(admins) }
+{% endif %}
+
+
+  http-request redirect scheme https code 301 unless { ssl_fc }
+  http-request del-header X-Forwarded-For
+
+  # Default URL (/) rules
+  # Redirect root path ( / ) and app path w/o trailin slash to /myapp/
+  http-request redirect   code 301 location /myapp/      if { path / } || { path /myapp }
+  use_backend be-myapp       if { path_beg /myapp/ }
+  default_backend be-myapp
+
+  # PHPMyAdmin
+  http-request redirect   code 301 location /pma/        if { path /pma }
+  use_backend be-db_mariadb_pma    if { path_beg /pma/ }
+
+  # Gitlab CE
+  http-request redirect   code 301 location /gitlab/        if { path /gitlab }
+  use_backend be-gitlab_ce    if { path_beg /gitlab/ }
+
+  # Zabbix
+  http-request redirect   code 301 location /zabbix/        if { path /zabbix }
+  use_backend be-zabbix    if { path_beg /zabbix/ }
+
+  # Wordpress
+  http-request redirect   code 301 location /wordpress/        if { path /wordpress }
+  use_backend be-wordpress    if { path_beg /wordpress/ }
+
+#### Backend config
+
+backend be-certbot
+  server certbot-1 nw_haproxy_certbot_1:80  resolvers container-dns  init-addr none
+  http-request add-header X-Forwarded-Proto https if { ssl_fc }
+  http-request set-header X-Forwarded-Port %[dst_port]
+
+
+backend be-db_mariadb_pma
+  server phpmyadmin-1 db_mariadb_pma_1:80  check  resolvers container-dns  init-addr none
+  http-request add-header X-Forwarded-Proto https if { ssl_fc }
+  http-request set-header X-Forwarded-Port %[dst_port]
+  http-request set-path "%[path,regsub(^/pma,/)]"
+
+backend be-gitlab_ce
+  server gitlab_ce-1 gitlab_ce_gitlab-ce_1:9999  check  resolvers container-dns  init-addr none
+  http-request add-header X-Forwarded-Proto https if { ssl_fc }
+  http-request set-header X-Forwarded-Port %[dst_port]
+
+backend be-zabbix
+  server zabbix-1 zabbix_zabbix-web_1:8080  check  resolvers container-dns  init-addr none
+  http-request add-header X-Forwarded-Proto https if { ssl_fc }
+  http-request set-header X-Forwarded-Port %[dst_port]
+  http-request set-path "%[path,regsub(^/zabbix,/)]"
+
+backend be-wordpress
+  server wordpress-1 wordpress_wordpress_1:80  check  resolvers container-dns  init-addr none
+  http-request add-header X-Forwarded-Proto https if { ssl_fc }
+  http-request set-header X-Forwarded-Port %[dst_port]
+  http-request set-path "%[path,regsub(^/wordpress,/)]"
+
+
+backend be-myapp
+  server myapp-1 nginx:80  check  resolvers container-dns  init-addr none
+  http-request set-header X-Forwarded-Uri %[url]
+
+  ### Before HAProxy, there is a port forward 443->8443 on the server
+  # http-request set-header X-Forwarded-Port %[dst_port]
+  http-request set-header X-Forwarded-Port 443
+
+  http-request add-header X-Forwarded-Proto https if { ssl_fc }

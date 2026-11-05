@@ -1,0 +1,23 @@
+---
+### https://docs.docker.com/compose/compose-file/
+
+networks:
+  containerhost:
+    external: true
+
+services:
+
+  nexus-server:
+    image: docker.io/sonatype/nexus3:3.90.1
+    networks:
+      - containerhost
+    ports:
+      - "8081:8081"
+      - "8085:8085"
+    environment:
+      - TZ={{ containerhost__time_zone }}
+      - LANG=en_US.utf8
+    restart: unless-stopped
+    volumes:
+#      Adding "U" to the mount makes the owner the container default user, for now "nexus"
+      - /home/{{ ansible_user }}/container-projects/{{containerhost__container_project_name}}/nexus-data:/nexus-data:U,z,rw

@@ -1,0 +1,83 @@
+---
+# configure OpenVPN client on the managed host
+
+# see:
+# https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_reuse_roles.html#roles
+# https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_reuse.html#reusing-files-and-roles
+
+# Put standalone certs to /etc/openvpn/client/
+# nmcli connection show --active
+
+- name: Install packages for OpenVPN
+  become: true
+  ansible.builtin.dnf:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - NetworkManager-openvpn
+    - traceroute
+
+- name: Copy VPN profile to managed host
+  ansible.builtin.copy:
+    src: "{{ containerhost__openvpn_connection_profile }}.ovpn"
+    dest: "/home/{{ ansible_user }}/"
+    mode: "0600"
+
+- name: Check whether OpenVPN connection is already imported
+  ansible.builtin.command: "nmcli connection show {{ containerhost__openvpn_connection_profile }}"
+  register: containerhost__openvpn_connection_status
+  changed_when: false
+  failed_when: false
+
+- name: Import OpenVPN connection
+  become: true
+  ansible.builtin.command: "nmcli connection import type openvpn file /home/{{ ansible_user }}/{{ containerhost__openvpn_connection_profile }}.ovpn"
+  when: containerhost__openvpn_connection_status.rc != 0
+  register: containerhost__result
+  changed_when: containerhost__result.rc == 0
+
+
+- name: Set tunnel to split mode (no default route should point to the VPN)
+  become: true
+  ansible.builtin.command: "nmcli connection modify {{ containerhost__openvpn_connection_profile }} ipv4.never-default true  ipv6.never-default true"
+  when: containerhost__openvpn_connection_status.rc != 0
+  register: containerhost__result
+  changed_when: containerhost__result.rc == 0
+
+- name: Read OpenVPN auto-connect value
+  ansible.builtin.command: "nmcli -g connection.autoconnect connection show {{ containerhost__openvpn_connection_profile }}"
+  register: containerhost__openvpn_autoconnect_status
+  changed_when: false
+
+- name: Set profile to auto-connect
+  become: true
+  ansible.builtin.command: "nmcli connection modify {{ containerhost__openvpn_connection_profile }} connection.autoconnect yes"
+  when: containerhost__openvpn_autoconnect_status.stdout | trim != 'yes'
+  register: containerhost__result
+  changed_when: containerhost__result.rc == 0
+
+- name: Read if any profile is bounded to (depends on) the default interface
+  ansible.builtin.command: "nmcli -g connection.secondaries connection show {{ ansible_default_ipv4.interface }}"
+  register: containerhost__main_eth_bind_status
+  changed_when: false
+
+- name: Bind VPN profile to the default physical interface for autostart trigger
+  become: true
+  ansible.builtin.command: "nmcli con modify {{ ansible_default_ipv4.interface }} +connection.secondaries {{ containerhost__openvpn_connection_profile }}"
+  when: containerhost__main_eth_bind_status.stdout | default('', true) | trim == ''
+  register: containerhost__result
+  changed_when: containerhost__result.rc == 0
+
+- name: Check whether OpenVPN connection is active
+  ansible.builtin.command: "nmcli -t -f NAME connection show --active"
+  register: containerhost__openvpn_active_connections
+  changed_when: false
+
+- name: Activate OpenVPN connection
+  become: true
+  ansible.builtin.command: "nmcli connection up {{ containerhost__openvpn_connection_profile }}"
+  when: >
+    containerhost__openvpn_connection_profile not in
+    containerhost__openvpn_active_connections.stdout_lines
+  register: containerhost__result
+  changed_when: containerhost__result.rc == 0
